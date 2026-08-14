@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/odbench-train-verify.XXXXXX")"
+jobs_root="$temporary_directory/jobs"
+labels="$temporary_directory/labels"
+job_id=""
+
+cleanup() {
+    if [[ -n "$job_id" ]]; then
+        ODBENCH_JOBS_ROOT="$jobs_root" "$script_dir/trainer" stop "$job_id" >/dev/null 2>&1 || true
+    fi
+    rm -rf -- "$temporary_directory"
+}
+trap cleanup EXIT
+
+"$script_dir/evaluator" export-labels "$labels"
+start_result="$(
+    ODBENCH_JOBS_ROOT="$jobs_root" "$script_dir/trainer" start \
+        --workspace "$repo_root/examples/cifar10-train" \
+        --entrypoint train.py \
+        --budget-seconds 300 \
+        --memory 4g \
+        --cpus 2
+)"
+job_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["job_id"])' "$start_result")"
+
+first="$(
+    ODBENCH_JOBS_ROOT="$jobs_root" "$script_dir/trainer" await "$job_id" \
+        --labels "$labels/labels.json"
+)"
+python3 -c '
+import json, sys
+result = json.loads(sys.argv[1])
+assert result["type"] == "train_epoch_complete", result
+assert result["event_id"] == "epoch-000000", result
+assert result["evaluation"]["num_examples"] == 10_000, result
+assert 0.0 <= result["evaluation"]["metrics"]["top1_accuracy"] <= 1.0, result
+' "$first"
+first_status="$(ODBENCH_JOBS_ROOT="$jobs_root" "$script_dir/trainer" status "$job_id")"
+python3 -c '
+import json, sys
+status = json.loads(sys.argv[1])
+assert status["status"] == "awaiting_decision", status
+assert status["container_status"] == "paused", status
+assert status["active_started_at"] is None, status
+' "$first_status"
+
+ODBENCH_JOBS_ROOT="$jobs_root" "$script_dir/trainer" continue "$job_id" epoch-000000 >/dev/null
+second="$(
+    ODBENCH_JOBS_ROOT="$jobs_root" "$script_dir/trainer" await "$job_id" \
+        --labels "$labels/labels.json"
+)"
+python3 -c '
+import json, sys
+first, second = map(json.loads, sys.argv[1:])
+assert second["type"] == "train_epoch_complete", second
+assert second["event_id"] == "epoch-000001", second
+assert second["evaluation"]["num_examples"] == 10_000, second
+assert second["metering"]["active_wall_seconds"] > first["metering"]["active_wall_seconds"]
+print(json.dumps({"first_epoch": first, "second_epoch": second}, indent=2, sort_keys=True))
+' "$first" "$second"
+second_status="$(ODBENCH_JOBS_ROOT="$jobs_root" "$script_dir/trainer" status "$job_id")"
+python3 -c '
+import json, sys
+status = json.loads(sys.argv[1])
+assert status["status"] == "awaiting_decision", status
+assert status["container_status"] == "paused", status
+' "$second_status"
+
+ODBENCH_JOBS_ROOT="$jobs_root" "$script_dir/trainer" stop "$job_id" >/dev/null
+job_id=""

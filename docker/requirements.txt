@@ -1,0 +1,14 @@
+# Runtime dependencies installed from PyPI. PyTorch and torchvision are installed
+# separately from PyTorch's CPU-only wheel index in the Dockerfile.
+numpy==2.2.6
+onnx==1.22.0
+onnxruntime==1.27.0
+onnxscript==0.7.1
+opencv-python-headless==4.12.0.88
+Pillow==11.3.0
+pycocotools==2.0.10
+PyYAML==6.0.2
+safetensors==0.6.2
+scikit-learn==1.7.1
+scipy==1.16.1
+tqdm==4.67.1

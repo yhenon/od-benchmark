@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+dataset="${ODBENCH_DATASET:-cifar10}"
+image="${ODBENCH_IMAGE:-od-benchmark-agent:${dataset}-dev}"
+base_image="${ODBENCH_BASE_IMAGE:-od-benchmark-agent:base-dev}"
+container="${ODBENCH_CONTAINER:-od-benchmark-agent-${dataset}}"
+memory="${ODBENCH_MEMORY:-8g}"
+cpus="${ODBENCH_CPUS:-4}"
+
+if [[ ! "$dataset" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+    echo "invalid ODBENCH_DATASET: $dataset" >&2
+    exit 2
+fi
+
+usage() {
+    echo "usage: docker/sandbox {build-base|build|start|exec|shell|status|stop} [args ...]" >&2
+    exit 2
+}
+
+case "${1:-}" in
+    build-base)
+        shift
+        docker build --target agent-base --tag "$base_image" "$@" "$repo_root"
+        ;;
+    build)
+        shift
+        if [[ ! -f "$script_dir/datasets/$dataset/prepare.py" || ! -f "$script_dir/datasets/$dataset/runtime.py" ]]; then
+            echo "dataset hook not found: $dataset" >&2
+            exit 1
+        fi
+        docker build \
+            --target dataset-runtime \
+            --build-arg "DATASET=$dataset" \
+            --tag "$image" \
+            "$@" \
+            "$repo_root"
+        ;;
+    start)
+        if docker container inspect "$container" >/dev/null 2>&1; then
+            echo "container already exists: $container" >&2
+            exit 1
+        fi
+        docker run --detach \
+            --name "$container" \
+            --hostname agent \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges=true \
+            --pids-limit 256 \
+            --memory "$memory" \
+            --memory-swap "$memory" \
+            --cpus "$cpus" \
+            --tmpfs /workspace:rw,exec,nosuid,nodev,uid=10001,gid=10001,mode=700,size=2147483648 \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=700,size=536870912 \
+            --env HOME=/workspace \
+            --env XDG_CACHE_HOME=/workspace/.cache \
+            --user 10001:10001 \
+            --workdir /workspace \
+            "$image" >/dev/null
+        echo "started $container with dataset=$dataset"
+        ;;
+    exec)
+        shift
+        if [[ "$#" -eq 0 ]]; then
+            usage
+        fi
+        docker exec --interactive \
+            --user 10001:10001 \
+            --workdir /workspace \
+            "$container" "$@"
+        ;;
+    shell)
+        shift
+        docker exec --interactive --tty \
+            --user 10001:10001 \
+            --workdir /workspace \
+            "$container" bash "$@"
+        ;;
+    status)
+        docker container inspect \
+            --format '{{.State.Status}} image={{.Config.Image}} network={{.HostConfig.NetworkMode}} readonly={{.HostConfig.ReadonlyRootfs}}' \
+            "$container"
+        ;;
+    stop)
+        docker container stop "$container" >/dev/null
+        docker container rm "$container" >/dev/null
+        echo "removed $container (its disposable workspace was deleted)"
+        ;;
+    *)
+        usage
+        ;;
+esac

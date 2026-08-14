@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1.7
+
+ARG PYTHON_IMAGE=python:3.12.11-slim-bookworm
+ARG DATASET=cifar10
+
+FROM ${PYTHON_IMAGE} AS eval-dataset-builder
+
+ARG DATASET
+RUN python -m pip install --no-cache-dir numpy==2.2.6
+COPY docker/eval/datasets/${DATASET}/prepare.py /usr/local/bin/prepare-eval-dataset
+RUN python /usr/local/bin/prepare-eval-dataset /dataset /labels
+
+
+FROM scratch AS labels-export
+COPY --from=eval-dataset-builder /labels/ /
+
+
+FROM ${PYTHON_IMAGE} AS evaluator-base
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/opt/odbench/evaluator \
+    ODBENCH_EVAL_DATA_ROOT=/opt/odbench/eval-data \
+    ODBENCH_WORKER_UID=10002 \
+    ODBENCH_WORKER_GID=10002
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates tini \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/eval/requirements.txt /tmp/requirements.txt
+RUN python -m pip install --index-url https://pypi.org/simple \
+        --requirement /tmp/requirements.txt \
+    && rm /tmp/requirements.txt \
+    && python -m pip check
+
+COPY docker/eval/odbench_eval /opt/odbench/evaluator/odbench_eval
+
+RUN groupadd --gid 10002 eval-worker \
+    && useradd --uid 10002 --gid 10002 --no-create-home --home-dir /tmp/worker eval-worker \
+    && chmod -R a-w /opt/odbench/evaluator
+
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "odbench_eval"]
+CMD ["/submission"]
+
+
+FROM evaluator-base AS evaluator-runtime
+
+ARG DATASET
+ENV ODBENCH_EVAL_DATASET=${DATASET}
+
+COPY --from=eval-dataset-builder /dataset /opt/odbench/eval-data/${DATASET}
+COPY docker/eval/datasets/${DATASET}/runtime.py /opt/odbench/evaluator/eval_dataset.py
+
+RUN chmod -R 0700 /opt/odbench/eval-data \
+    && python -m odbench_eval.validate_dataset

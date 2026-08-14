@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1.7
+
+# The CPU prototype reuses the matching agent dataset image. A CUDA build can
+# later replace this base while keeping the same /job and mailbox contracts.
+ARG DATASET=cifar10
+ARG BASE_IMAGE=od-benchmark-agent:cifar10-dev
+
+FROM ${BASE_IMAGE} AS training-runtime
+
+COPY docker/train/odbench_train /opt/odbench/python/odbench_train
+
+USER root
+RUN chmod -R a-w /opt/odbench/python/odbench_train
+
+USER 10001:10001
+WORKDIR /job/input
+
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "odbench_train.launch"]

@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+container="od-benchmark-verify-$$"
+base_image="${ODBENCH_BASE_IMAGE:-od-benchmark-agent:base-dev}"
+started=false
+
+cleanup() {
+    if [[ "$started" == true ]]; then
+        ODBENCH_CONTAINER="$container" "$script_dir/sandbox" stop >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+docker run --rm --interactive \
+    --network none \
+    --read-only \
+    --cap-drop ALL \
+    --security-opt no-new-privileges=true \
+    --user 10001:10001 \
+    "$base_image" python - <<'PY'
+from pathlib import Path
+
+from odbench import dataset_manifest
+
+assert not Path("/opt/odbench/data").exists()
+try:
+    dataset_manifest()
+except RuntimeError as error:
+    assert "no dataset is installed" in str(error)
+else:
+    raise AssertionError("generic base unexpectedly exposed a dataset")
+
+print("base image: dataset=none")
+PY
+
+ODBENCH_CONTAINER="$container" "$script_dir/sandbox" start >/dev/null
+started=true
+run=("$script_dir/sandbox")
+
+ODBENCH_CONTAINER="$container" "${run[@]}" exec python - <<'PY'
+import os
+import socket
+from pathlib import Path
+
+import numpy as np
+import onnx
+import onnxruntime
+import torch
+import torchvision
+from odbench import dataset_manifest, load_dataset
+
+manifest = dataset_manifest()
+dataset = load_dataset()
+assert manifest["id"] == "cifar10"
+assert manifest["default_split"] == "train"
+assert set(manifest["splits"]) == {"train"}
+assert len(dataset) == 50_000
+assert dataset[0][0].size == (32, 32)
+assert not (dataset.root / "test_batch").exists()
+assert torch.cuda.is_available() is False
+assert os.getuid() == 10_001
+assert not Path("/var/run/docker.sock").exists()
+
+try:
+    socket.create_connection(("1.1.1.1", 53), timeout=0.25)
+except OSError:
+    pass
+else:
+    raise AssertionError("outbound network connection succeeded")
+
+Path("/workspace/write-check").write_text("ok")
+try:
+    Path("/root/write-check").write_text("not ok")
+except OSError:
+    pass
+else:
+    raise AssertionError("root filesystem is writable")
+
+model = torch.nn.Sequential(torch.nn.Flatten(), torch.nn.Linear(12, 2)).eval()
+sample = torch.randn(1, 3, 2, 2)
+onnx_path = "/workspace/smoke.onnx"
+torch.onnx.export(
+    model,
+    (sample,),
+    onnx_path,
+    input_names=["input"],
+    output_names=["output"],
+    dynamo=True,
+)
+onnx.checker.check_model(onnx.load(onnx_path))
+session = onnxruntime.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+actual = session.run(["output"], {"input": sample.numpy()})[0]
+expected = model(sample).detach().numpy()
+np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+print(
+    f"torch={torch.__version__} torchvision={torchvision.__version__} "
+    f"onnx={onnx.__version__} onnxruntime={onnxruntime.__version__} "
+    f"dataset={manifest['id']} splits={','.join(manifest['splits'])} "
+    f"examples={len(dataset)}"
+)
+PY
+
+network_mode="$(docker container inspect --format '{{.HostConfig.NetworkMode}}' "$container")"
+readonly_root="$(docker container inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$container")"
+capabilities="$(docker container inspect --format '{{json .HostConfig.CapAdd}}/{{json .HostConfig.CapDrop}}' "$container")"
+mounts="$(docker container inspect --format '{{json .Mounts}}' "$container")"
+
+[[ "$network_mode" == "none" ]]
+[[ "$readonly_root" == "true" ]]
+[[ "$capabilities" == "null/[\"ALL\"]" ]]
+[[ "$mounts" == "[]" ]]
+echo "isolation: network=none rootfs=read-only capabilities=none host-mounts=none"

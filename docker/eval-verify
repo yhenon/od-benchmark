@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/odbench-eval-verify.XXXXXX")"
+
+cleanup() {
+    rm -rf -- "$temporary_directory"
+}
+trap cleanup EXIT
+
+submission="$temporary_directory/submission"
+labels="$temporary_directory/labels"
+mkdir -p "$submission"
+cp "$repo_root/examples/cifar10-eval/"*.py "$submission/"
+cp "$repo_root/examples/cifar10-eval/submission.json" "$submission/"
+
+docker run --rm \
+    --network none \
+    --user "$(id -u):$(id -g)" \
+    --mount "type=bind,source=$submission,target=/out" \
+    od-benchmark-agent:base-dev \
+    python /out/make_model.py
+
+docker run --rm \
+    --network none \
+    --read-only \
+    --cap-drop ALL \
+    --user 10002:10002 \
+    --entrypoint python \
+    od-benchmark-evaluator:cifar10-dev \
+    -c 'from pathlib import Path; p=Path("/opt/odbench/eval-data/cifar10/images.npy"); exec("try:\n p.open(\"rb\")\nexcept PermissionError:\n pass\nelse:\n raise AssertionError(\"worker can read evaluation storage\")")'
+
+"$script_dir/evaluator" export-labels "$labels"
+result="$("$script_dir/evaluator" evaluate "$submission" "$labels/labels.json")"
+python3 - "$result" <<'PY'
+import json
+import sys
+
+result = json.loads(sys.argv[1])
+assert result["dataset"] == "cifar10"
+assert result["num_examples"] == 10_000
+assert result["metrics"]["top1_accuracy"] == 0.1
+print(json.dumps(result, indent=2, sort_keys=True))
+PY

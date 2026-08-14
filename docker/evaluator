@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+dataset="${ODBENCH_DATASET:-cifar10}"
+image="${ODBENCH_EVAL_IMAGE:-od-benchmark-evaluator:${dataset}-dev}"
+memory="${ODBENCH_EVAL_MEMORY:-4g}"
+cpus="${ODBENCH_EVAL_CPUS:-4}"
+
+if [[ ! "$dataset" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+    echo "invalid ODBENCH_DATASET: $dataset" >&2
+    exit 2
+fi
+
+usage() {
+    echo "usage: docker/evaluator {build|export-labels|infer|evaluate} [args ...]" >&2
+    exit 2
+}
+
+run_inference() {
+    local submission_directory
+    submission_directory="$(cd -- "$1" && pwd -P)"
+    docker run --rm \
+        --network none \
+        --read-only \
+        --cap-drop ALL \
+        --cap-add SETGID \
+        --cap-add SETUID \
+        --cap-add KILL \
+        --security-opt no-new-privileges=true \
+        --pids-limit 64 \
+        --memory "$memory" \
+        --memory-swap "$memory" \
+        --cpus "$cpus" \
+        --ulimit core=0 \
+        --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1073741824 \
+        --mount "type=bind,source=$submission_directory,target=/submission,readonly" \
+        "$image"
+}
+
+case "${1:-}" in
+    build)
+        shift
+        docker build \
+            --file "$repo_root/Dockerfile.eval" \
+            --target evaluator-runtime \
+            --build-arg "DATASET=$dataset" \
+            --tag "$image" \
+            "$@" \
+            "$repo_root"
+        ;;
+    export-labels)
+        [[ "$#" -eq 2 ]] || usage
+        destination="$2"
+        if [[ -e "$destination" ]]; then
+            echo "label export destination must not already exist: $destination" >&2
+            exit 1
+        fi
+        mkdir -p "$destination"
+        destination="$(cd -- "$destination" && pwd -P)"
+        docker build \
+            --file "$repo_root/Dockerfile.eval" \
+            --target labels-export \
+            --build-arg "DATASET=$dataset" \
+            --output "type=local,dest=$destination" \
+            "$repo_root"
+        ;;
+    infer)
+        [[ "$#" -eq 2 ]] || usage
+        run_inference "$2"
+        ;;
+    evaluate)
+        [[ "$#" -eq 3 ]] || usage
+        labels="$(cd -- "$(dirname -- "$3")" && pwd -P)/$(basename -- "$3")"
+        predictions_file="$(mktemp "${TMPDIR:-/tmp}/odbench-predictions.XXXXXX")"
+        cleanup_predictions() {
+            rm -f -- "$predictions_file"
+        }
+        trap cleanup_predictions EXIT
+        run_inference "$2" >"$predictions_file"
+        python3 "$script_dir/eval/score.py" "$labels" "$predictions_file"
+        cleanup_predictions
+        trap - EXIT
+        ;;
+    *)
+        usage
+        ;;
+esac
