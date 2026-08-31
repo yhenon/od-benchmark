@@ -2,4 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "${ODBENCH_TRAIN_HOST:-}" && "${1:-}" =~ ^(start|await|continue|stop|status)$ ]]; then
+    exec python3 "$script_dir/train/remote_client.py" "$@"
+fi
 exec python3 "$script_dir/train/controller.py" "$@"

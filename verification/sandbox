@@ -2,13 +2,14 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
 container="od-benchmark-verify-$$"
 base_image="${ODBENCH_BASE_IMAGE:-od-benchmark-agent:base-dev}"
 started=false
 
 cleanup() {
     if [[ "$started" == true ]]; then
-        ODBENCH_CONTAINER="$container" "$script_dir/sandbox" stop >/dev/null 2>&1 || true
+        ODBENCH_CONTAINER="$container" "$repo_root/docker/sandbox" stop >/dev/null 2>&1 || true
     fi
 }
 trap cleanup EXIT
@@ -35,9 +36,9 @@ else:
 print("base image: dataset=none")
 PY
 
-ODBENCH_CONTAINER="$container" "$script_dir/sandbox" start >/dev/null
+ODBENCH_CONTAINER="$container" "$repo_root/docker/sandbox" start >/dev/null
 started=true
-run=("$script_dir/sandbox")
+run=("$repo_root/docker/sandbox")
 
 ODBENCH_CONTAINER="$container" "${run[@]}" exec python - <<'PY'
 import os
@@ -50,6 +51,7 @@ import onnxruntime
 import torch
 import torchvision
 from odbench import dataset_manifest, load_dataset
+from odbench_train import epoch_end
 
 manifest = dataset_manifest()
 dataset = load_dataset()
@@ -62,6 +64,18 @@ assert not (dataset.root / "test_batch").exists()
 assert torch.cuda.is_available() is False
 assert os.getuid() == 10_001
 assert not Path("/var/run/docker.sock").exists()
+
+try:
+    epoch_end(
+        epoch=0,
+        artifact="model.onnx",
+        preprocess="preprocess.py",
+        postprocess="postprocess.py",
+    )
+except RuntimeError as error:
+    assert "train_start" in str(error)
+else:
+    raise AssertionError("epoch_end unexpectedly ran outside a training job")
 
 try:
     socket.create_connection(("1.1.1.1", 53), timeout=0.25)

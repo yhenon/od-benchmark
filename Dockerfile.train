@@ -15,4 +15,4 @@ RUN chmod -R a-w /opt/odbench/python/odbench_train
 USER 10001:10001
 WORKDIR /job/input
 
-ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "odbench_train.launch"]
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "-P", "-m", "odbench_train.launch"]

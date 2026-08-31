@@ -8,6 +8,7 @@ dataset="${ODBENCH_DATASET:-cifar10}"
 image="${ODBENCH_EVAL_IMAGE:-od-benchmark-evaluator:${dataset}-dev}"
 memory="${ODBENCH_EVAL_MEMORY:-4g}"
 cpus="${ODBENCH_EVAL_CPUS:-4}"
+data_source="${ODBENCH_EVAL_DATA_SOURCE:-${ODBENCH_DATA_SOURCE:-}}"
 
 if [[ ! "$dataset" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
     echo "invalid ODBENCH_DATASET: $dataset" >&2
@@ -40,13 +41,31 @@ run_inference() {
         "$image"
 }
 
+dataset_build_arguments() {
+    source_context="$repo_root"
+    if [[ -n "$data_source" ]]; then
+        if [[ ! -d "$data_source" ]]; then
+            echo "evaluation data source is not a directory: $data_source" >&2
+            exit 1
+        fi
+        data_source="$(cd -- "$data_source" && pwd -P)"
+        source_context="$data_source"
+    fi
+    printf '%s\0' --build-context "odbench_dataset_source=$source_context"
+}
+
 case "${1:-}" in
     build)
         shift
+        build_arguments=()
+        while IFS= read -r -d '' argument; do
+            build_arguments+=("$argument")
+        done < <(dataset_build_arguments)
         docker build \
             --file "$repo_root/Dockerfile.eval" \
             --target evaluator-runtime \
             --build-arg "DATASET=$dataset" \
+            "${build_arguments[@]}" \
             --tag "$image" \
             "$@" \
             "$repo_root"
@@ -60,10 +79,15 @@ case "${1:-}" in
         fi
         mkdir -p "$destination"
         destination="$(cd -- "$destination" && pwd -P)"
+        build_arguments=()
+        while IFS= read -r -d '' argument; do
+            build_arguments+=("$argument")
+        done < <(dataset_build_arguments)
         docker build \
             --file "$repo_root/Dockerfile.eval" \
             --target labels-export \
             --build-arg "DATASET=$dataset" \
+            "${build_arguments[@]}" \
             --output "type=local,dest=$destination" \
             "$repo_root"
         ;;

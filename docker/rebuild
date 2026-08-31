@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+
+usage() {
+    echo "usage: docker/rebuild DATASET" >&2
+    exit 2
+}
+
+[[ "$#" -eq 1 ]] || usage
+dataset="$1"
+if [[ ! "$dataset" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+    echo "invalid dataset: $dataset" >&2
+    exit 2
+fi
+
+task_definition="$repo_root/tasks/$dataset.json"
+if [[ ! -f "$task_definition" ]]; then
+    echo "task definition not found for dataset: $dataset" >&2
+    exit 1
+fi
+
+image_name() {
+    python3 -c \
+        'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["images"][sys.argv[2]])' \
+        "$task_definition" "$1"
+}
+
+agent_image="$(image_name agent)"
+trainer_image="$(image_name trainer)"
+evaluator_image="$(image_name evaluator)"
+
+"$script_dir/prepare" "$dataset"
+
+docker image inspect \
+    "$agent_image" \
+    "$trainer_image" \
+    "$evaluator_image" >/dev/null
+
+docker run --rm \
+    --network none \
+    --read-only \
+    --entrypoint python \
+    "$trainer_image" \
+    -c 'import odbench.quantize, odbench_train'
+
+echo "rebuilt dataset=$dataset"
+echo "  agent:     $agent_image"
+echo "  trainer:   $trainer_image"
+echo "  evaluator: $evaluator_image"

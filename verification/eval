@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
+docker_dir="$repo_root/docker"
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/odbench-eval-verify.XXXXXX")"
 
 cleanup() {
@@ -11,10 +12,21 @@ cleanup() {
 trap cleanup EXIT
 
 submission="$temporary_directory/submission"
+oversized_submission="$temporary_directory/oversized-submission"
 labels="$temporary_directory/labels"
 mkdir -p "$submission"
 cp "$repo_root/examples/cifar10-eval/"*.py "$submission/"
 cp "$repo_root/examples/cifar10-eval/submission.json" "$submission/"
+
+mkdir -p "$oversized_submission"
+cp "$repo_root/examples/cifar10-eval/"*.py "$oversized_submission/"
+cp "$repo_root/examples/cifar10-eval/submission.json" "$oversized_submission/"
+truncate -s 16777217 "$oversized_submission/model.onnx"
+if oversized_error="$("$docker_dir/evaluator" infer "$oversized_submission" 2>&1)"; then
+    echo "evaluator accepted an ONNX artifact larger than 16 MiB" >&2
+    exit 1
+fi
+[[ "$oversized_error" == *"submission input is too large"* ]]
 
 docker run --rm \
     --network none \
@@ -32,8 +44,8 @@ docker run --rm \
     od-benchmark-evaluator:cifar10-dev \
     -c 'from pathlib import Path; p=Path("/opt/odbench/eval-data/cifar10/images.npy"); exec("try:\n p.open(\"rb\")\nexcept PermissionError:\n pass\nelse:\n raise AssertionError(\"worker can read evaluation storage\")")'
 
-"$script_dir/evaluator" export-labels "$labels"
-result="$("$script_dir/evaluator" evaluate "$submission" "$labels/labels.json")"
+"$docker_dir/evaluator" export-labels "$labels"
+result="$("$docker_dir/evaluator" evaluate "$submission" "$labels/labels.json")"
 python3 - "$result" <<'PY'
 import json
 import sys

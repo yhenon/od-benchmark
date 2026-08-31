@@ -1,5 +1,4 @@
-def main():
-    print("Hello from od-benchmark!")
+from odbench_outer.cli import main
 
 
 if __name__ == "__main__":

@@ -167,6 +167,7 @@ def apply_patch(request: dict[str, Any]) -> dict[str, Any]:
         "core.hooksPath=/dev/null",
         "apply",
         "--recount",
+        "--whitespace=nowarn",
     ]
     environment = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1"}
     check = subprocess.run(
@@ -178,14 +179,20 @@ def apply_patch(request: dict[str, Any]) -> dict[str, Any]:
         stderr=subprocess.PIPE,
         timeout=30,
     )
-    if check.returncode != 0:
+    if check.returncode != 0 or check.stderr:
+        stderr = check.stderr.decode("utf-8", errors="replace")[-32_768:]
+        if check.returncode == 0:
+            stderr = (
+                "patch rejected because git reported structural warnings; "
+                "fix the diff headers and hunk boundaries:\n" + stderr
+            )
         return {
             "applied": False,
             "stdout": check.stdout.decode("utf-8", errors="replace")[-32_768:],
-            "stderr": check.stderr.decode("utf-8", errors="replace")[-32_768:],
+            "stderr": stderr,
         }
     applied = subprocess.run(
-        [*base_command, "--whitespace=nowarn", "-"],
+        [*base_command, "-"],
         cwd=WORKSPACE,
         env=environment,
         input=encoded,
@@ -194,7 +201,7 @@ def apply_patch(request: dict[str, Any]) -> dict[str, Any]:
         timeout=30,
     )
     return {
-        "applied": applied.returncode == 0,
+        "applied": applied.returncode == 0 and not applied.stderr,
         "stdout": applied.stdout.decode("utf-8", errors="replace")[-32_768:],
         "stderr": applied.stderr.decode("utf-8", errors="replace")[-32_768:],
     }

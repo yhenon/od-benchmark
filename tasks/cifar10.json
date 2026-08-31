@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "cifar10",
+  "dataset": "cifar10",
+  "prompts": {
+    "task": "tasks/cifar10.md",
+    "system": "prompts/agent-system.md"
+  },
+  "training_hardware": "hardware/training/local-cpu.json",
+  "target_hardware": "hardware/targets/nucleo-n657x0-q.json",
+  "images": {
+    "agent": "od-benchmark-agent:cifar10-dev",
+    "trainer": "od-benchmark-trainer:cifar10-dev",
+    "evaluator": "od-benchmark-evaluator:cifar10-dev"
+  },
+  "evaluation": {
+    "metric": "top1_accuracy",
+    "objective": "maximize"
+  },
+  "limits": {
+    "max_onnx_bytes": 16777216,
+    "max_agent_turns": 100,
+    "max_evaluations": 20,
+    "max_train_starts": 4,
+    "max_train_job_seconds": 1800,
+    "max_total_train_seconds": 3600,
+    "max_command_seconds": 120,
+    "max_inference_runtime_seconds": 0.005
+  },
+  "model": {
+    "max_output_tokens": 16384,
+    "max_total_tokens": null,
+    "max_cost": null,
+    "reasoning_effort": null,
+    "request_timeout_seconds": 300,
+    "max_transport_retries": 3,
+    "max_response_retries": 3
+  }
+}

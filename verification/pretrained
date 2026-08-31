@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+image="${ODBENCH_BASE_IMAGE:-od-benchmark-agent:base-dev}"
+
+docker run --rm --interactive \
+    --network none \
+    --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
+    --cap-drop ALL \
+    --security-opt no-new-privileges=true \
+    --user 10001:10001 \
+    "$image" python - <<'PY'
+import math
+from pathlib import Path
+
+import onnx
+import torch
+
+from odbench import list_pretrained, load_backbone, load_detector
+
+catalog = list_pretrained()
+assert len(catalog) == 4, catalog
+assert {entry["kind"] for entry in catalog} == {"backbone", "detector"}
+
+sample = torch.randn(1, 3, 128, 160)
+backbone_ids = [entry["id"] for entry in catalog if entry["kind"] == "backbone"]
+for model_id in backbone_ids:
+    backbone = load_backbone(model_id).eval()
+    with torch.inference_mode():
+        outputs = backbone(sample)
+    assert len(outputs) == 4
+    assert tuple(output.shape[1] for output in outputs) == backbone.feature_channels
+    for output, reduction in zip(outputs, backbone.feature_reductions, strict=True):
+        expected = (math.ceil(128 / reduction), math.ceil(160 / reduction))
+        assert tuple(output.shape[-2:]) == expected, (model_id, output.shape, expected)
+
+export_model = load_backbone(
+    "torchvision/mobilenet_v3_small_imagenet1k_v1"
+).eval()
+onnx_path = Path("/tmp/mobilenet-v3-small-features.onnx")
+torch.onnx.export(
+    export_model,
+    (sample,),
+    onnx_path,
+    input_names=["images"],
+    output_names=["reduction4", "reduction8", "reduction16", "reduction32"],
+    opset_version=17,
+    dynamo=False,
+)
+onnx.checker.check_model(onnx.load(onnx_path))
+
+detector_id = "torchvision/ssdlite320_mobilenet_v3_large_coco_v1"
+coco_detector = load_detector(detector_id)
+assert coco_detector.backbone is not None
+detector = load_detector(
+    detector_id,
+    num_classes=11,
+)
+assert detector.backbone is not None
+assert sum(parameter.numel() for parameter in detector.parameters()) > 0
+print(
+    f"offline registry: models={len(catalog)} backbones={len(backbone_ids)} "
+    f"onnx_bytes={onnx_path.stat().st_size} detector_classes=11"
+)
+PY

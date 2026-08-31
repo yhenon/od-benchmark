@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1.7
+
+# Prototype CUDA trainer: reuse the immutable dataset/runtime layers from the
+# matching agent image, but replace its CPU-only PyTorch wheels with CUDA ones.
+ARG DATASET=cifar10
+ARG BASE_IMAGE=od-benchmark-agent:cifar10-dev
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
+ARG TORCH_VERSION=2.13.0+cu130
+ARG TORCHVISION_VERSION=0.28.0+cu130
+
+FROM ${BASE_IMAGE} AS training-runtime
+
+ARG TORCH_INDEX_URL
+ARG TORCH_VERSION
+ARG TORCHVISION_VERSION
+
+USER root
+COPY docker/requirements.txt /tmp/odbench-constraints.txt
+RUN python -m pip install --force-reinstall \
+        --index-url "${TORCH_INDEX_URL}" \
+        --extra-index-url https://pypi.org/simple \
+        --constraint /tmp/odbench-constraints.txt \
+        "torch==${TORCH_VERSION}" \
+        "torchvision==${TORCHVISION_VERSION}" \
+    && rm /tmp/odbench-constraints.txt \
+    && python -m pip check \
+    && python -c "import torch; assert torch.version.cuda; print(torch.__version__, torch.version.cuda)"
+
+COPY docker/train/odbench_train /opt/odbench/python/odbench_train
+RUN chmod -R a-w /opt/odbench/python/odbench_train
+
+USER 10001:10001
+WORKDIR /job/input
+
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "-P", "-m", "odbench_train.launch"]

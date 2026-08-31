@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "local-cpu",
+  "accelerator": "cpu",
+  "description": "CPU-only local training with a four-CPU quota and 8 GiB memory limit.",
+  "cpus": 4,
+  "memory": "8g",
+  "shared_memory": "1g",
+  "pids": 256,
+  "gpus": null,
+  "environment": {
+    "MKL_NUM_THREADS": "4",
+    "NUMEXPR_NUM_THREADS": "4",
+    "ODBENCH_ACCELERATOR": "cpu",
+    "ODBENCH_CPUS": "4",
+    "ODBENCH_MEMORY": "8g",
+    "ODBENCH_SHARED_MEMORY": "1g",
+    "OMP_NUM_THREADS": "4",
+    "OPENBLAS_NUM_THREADS": "4"
+  }
+}

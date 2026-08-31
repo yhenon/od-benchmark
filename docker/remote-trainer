@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+host="${ODBENCH_TRAIN_HOST:-}"
+remote_repo="${ODBENCH_REMOTE_REPO:-/home/odbench/od-benchmark}"
+remote_jobs="${ODBENCH_REMOTE_JOBS_ROOT:-/var/lib/odbench/jobs}"
+remote_data_root="${ODBENCH_REMOTE_DATA_ROOT:-/var/lib/odbench/datasets}"
+dataset="${ODBENCH_DATASET:-cifar10}"
+image="${ODBENCH_TRAIN_IMAGE:-od-benchmark-trainer:${dataset}-dev}"
+local_train_data="${ODBENCH_TRAIN_DATA_SOURCE:-}"
+remote_train_data="${ODBENCH_REMOTE_TRAIN_DATA_SOURCE:-$remote_data_root/$dataset/train}"
+
+if [[ -z "$host" || "$host" =~ [[:space:]] || "$host" == -* ]]; then
+    echo "ODBENCH_TRAIN_HOST is required and must be an SSH destination" >&2
+    exit 2
+fi
+if [[ ! "$dataset" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+    echo "invalid ODBENCH_DATASET: $dataset" >&2
+    exit 2
+fi
+if [[ ! "$image" =~ ^[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+$ ]]; then
+    echo "invalid ODBENCH_TRAIN_IMAGE: $image" >&2
+    exit 2
+fi
+if [[ ! "$remote_repo" =~ ^/[A-Za-z0-9._/-]+$ || ! "$remote_jobs" =~ ^/[A-Za-z0-9._/-]+$ || ! "$remote_data_root" =~ ^/[A-Za-z0-9._/-]+$ || ! "$remote_train_data" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+    echo "remote repository, jobs, and dataset paths must be simple absolute paths" >&2
+    exit 2
+fi
+
+if [[ -z "$local_train_data" && "$dataset" == "visdrone" ]]; then
+    local_train_data="$repo_root/data/VisDrone2019-DET-train"
+fi
+if [[ -z "$local_train_data" && "$dataset" == "widerface" ]]; then
+    local_train_data="$repo_root/data"
+fi
+
+case "${1:-}" in
+    sync)
+        ssh -o BatchMode=yes "$host" "mkdir -p '$remote_repo' '$remote_jobs'"
+        rsync -az \
+            --exclude .git \
+            --exclude .venv \
+            --exclude .odbench \
+            --exclude runs \
+            --exclude data \
+            --exclude tmp \
+            --exclude __pycache__ \
+            --exclude .pytest_cache \
+            "$repo_root/" "$host:$remote_repo/"
+        ;;
+    sync-data)
+        if [[ -z "$local_train_data" || ! -d "$local_train_data" ]]; then
+            echo "ODBENCH_TRAIN_DATA_SOURCE must name a local directory for dataset=$dataset" >&2
+            exit 2
+        fi
+        local_train_data="$(cd -- "$local_train_data" && pwd -P)"
+        ssh -o BatchMode=yes "$host" "mkdir -p '$remote_train_data'"
+        if [[ "$dataset" == "widerface" ]]; then
+            if [[ ! -d "$local_train_data/WIDER_train/images" || ! -f "$local_train_data/wider_face_split/wider_face_train_bbx_gt.txt" ]]; then
+                echo "WIDER FACE source must contain WIDER_train/images and its train annotation file" >&2
+                exit 1
+            fi
+            ssh -o BatchMode=yes "$host" \
+                "mkdir -p '$remote_train_data/WIDER_train' '$remote_train_data/wider_face_split'"
+            rsync -az \
+                "$local_train_data/WIDER_train/images/" \
+                "$host:$remote_train_data/WIDER_train/images/"
+            rsync -az \
+                "$local_train_data/wider_face_split/wider_face_train_bbx_gt.txt" \
+                "$host:$remote_train_data/wider_face_split/wider_face_train_bbx_gt.txt"
+        else
+            rsync -az \
+                "$local_train_data/" "$host:$remote_train_data/"
+        fi
+        ;;
+    build)
+        data_environment=""
+        if [[ -n "$local_train_data" ]]; then
+            data_environment="ODBENCH_TRAIN_DATA_SOURCE='$remote_train_data' "
+        fi
+        ssh -o BatchMode=yes "$host" \
+            "cd '$remote_repo' && ODBENCH_DATASET='$dataset' ODBENCH_IMAGE='od-benchmark-agent:${dataset}-dev' ${data_environment}docker/sandbox build && docker/trainer build --dataset '$dataset' --base-image 'od-benchmark-agent:${dataset}-dev' --image '$image' --cuda"
+        ;;
+    verify-gpu)
+        ssh -o BatchMode=yes "$host" \
+            "docker run --rm --network none --gpus all --entrypoint python '$image' -c 'import json,torch; from odbench import dataset_manifest,list_pretrained,load_backbone,load_dataset; assert torch.cuda.is_available(); device=torch.device(\"cuda\"); backbone=load_backbone(\"torchvision/mobilenet_v3_small_imagenet1k_v1\").eval().to(device); outputs=backbone(torch.randn(1,3,128,160,device=device)); manifest=dataset_manifest(); print(json.dumps({\"available\":True,\"device\":torch.cuda.get_device_name(0),\"torch\":torch.__version__,\"cuda\":torch.version.cuda,\"dataset\":manifest[\"id\"],\"examples\":len(load_dataset()),\"pretrained_models\":len(list_pretrained()),\"feature_shapes\":[list(value.shape) for value in outputs]}))'"
+        ;;
+    *)
+        echo "usage: docker/remote-trainer {sync|sync-data|build|verify-gpu}" >&2
+        exit 2
+        ;;
+esac

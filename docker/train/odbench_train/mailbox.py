@@ -78,6 +78,11 @@ def epoch_end(
     """Publish an epoch artifact and block until the outer controller decides."""
 
     global _last_epoch
+    if "ODBENCH_JOB_ID" not in os.environ:
+        raise RuntimeError(
+            "epoch_end() is only available inside a training job; "
+            "launch this script with the train_start tool"
+        )
     if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch <= _last_epoch:
         raise ValueError("epoch must be a monotonically increasing integer")
     if poll_seconds <= 0:

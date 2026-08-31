@@ -116,6 +116,6 @@ def main(destination: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: prepare.py DESTINATION")
+    if len(sys.argv) not in {2, 3}:
+        raise SystemExit("usage: prepare.py DESTINATION [SOURCE]")
     main(Path(sys.argv[1]))

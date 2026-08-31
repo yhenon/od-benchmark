@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "nucleo-n657x0-q",
+  "kind": "stm32n6",
+  "board": "NUCLEO-N657X0-Q",
+  "description": "STM32N657 Nucleo deployment target using the Neural-ART NPU.",
+  "model_format": "onnx",
+  "runtime_seconds": 0.005,
+  "submission_tolerance_fraction": 0.05,
+  "benchmark_samples": 10,
+  "max_external_image_bytes": 4194304,
+  "external_flash_timeout_seconds": 900
+}

@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OD Benchmark · Run Monitor</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: light-dark(#f4f4f1, #0d1110);
+      --panel: light-dark(#ffffff, #151a18);
+      --panel-soft: light-dark(#f8f8f5, #1b211e);
+      --ink: light-dark(#17201c, #eef3ef);
+      --muted: light-dark(#6b746f, #98a39d);
+      --line: light-dark(#dfe2dd, #2b332f);
+      --accent: #e66f3d;
+      --accent-soft: light-dark(#fff0e8, #3a2118);
+      --green: light-dark(#23765a, #5dc89d);
+      --red: light-dark(#ad3c3c, #ff8585);
+      --blue: light-dark(#356e9c, #76b8e8);
+      --gold: light-dark(#9b6d13, #e7bc60);
+      --shadow: light-dark(0 12px 28px rgba(28, 38, 33, .06), 0 12px 28px rgba(0, 0, 0, .18));
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+    button, select { font: inherit; }
+    .shell { min-height: 100vh; }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--bg) 90%, transparent);
+      backdrop-filter: blur(14px);
+    }
+    .topbar {
+      max-width: 1380px;
+      min-height: 66px;
+      margin: auto;
+      padding: 11px 24px;
+      display: flex;
+      align-items: center;
+      gap: 22px;
+    }
+    .brand { display: flex; align-items: center; gap: 11px; min-width: max-content; }
+    .mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      color: #fff;
+      background: var(--accent);
+      font-weight: 800;
+      letter-spacing: -.06em;
+    }
+    .brand strong { display: block; font-size: 14px; letter-spacing: -.01em; }
+    .brand span { display: block; margin-top: 1px; color: var(--muted); font-size: 11px; }
+    .run-picker {
+      margin-left: auto;
+      min-width: min(520px, 46vw);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    select {
+      min-width: 0;
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 34px 9px 11px;
+      background: var(--panel);
+      color: var(--ink);
+      outline: none;
+    }
+    select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+    .refresh {
+      flex: 0 0 auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 12px;
+      background: var(--panel);
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .refresh:hover { border-color: var(--accent); }
+    .refresh:disabled { color: var(--muted); cursor: wait; }
+    .connection { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 14%, transparent); }
+    .connection.offline .pulse { background: var(--red); box-shadow: none; }
+    main { max-width: 1380px; margin: auto; padding: 26px 24px 64px; }
+    .run-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; margin-bottom: 22px; }
+    .eyebrow { color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; font-weight: 750; }
+    h1 { margin: 5px 0 5px; font-size: clamp(23px, 3vw, 34px); letter-spacing: -.045em; line-height: 1.08; }
+    .meta { color: var(--muted); font-size: 13px; }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      box-shadow: var(--shadow);
+    }
+    .status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+    .status.ended::before { background: var(--muted); }
+    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .kpi { min-height: 112px; padding: 17px 18px; }
+    .kpi-label { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; }
+    .kpi-icon { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 7px; background: var(--panel-soft); color: var(--accent); font-size: 13px; font-weight: 800; }
+    .kpi-value { margin-top: 12px; font-size: 25px; line-height: 1; font-weight: 720; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+    .kpi-note { margin-top: 8px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(300px, .85fr); gap: 12px; margin-bottom: 12px; }
+    .panel-head { padding: 17px 18px 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    h2 { margin: 0; font-size: 15px; letter-spacing: -.015em; }
+    .subhead { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .chart-wrap { height: 252px; padding: 10px 14px 14px; }
+    .chart-wrap svg { display: block; width: 100%; height: 100%; overflow: visible; }
+    .chart-empty { height: 100%; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+    .axis { stroke: var(--line); stroke-width: 1; }
+    .chart-line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    .chart-area { fill: color-mix(in srgb, var(--accent) 10%, transparent); }
+    .chart-dot { fill: var(--panel); stroke: var(--accent); stroke-width: 2.2; }
+    .chart-dot.best { fill: var(--accent); }
+    .chart-label { fill: var(--muted); font-size: 10px; font-family: inherit; }
+    .score-pop { fill: var(--ink); font-size: 10px; font-weight: 700; font-family: inherit; }
+    .budget-body { padding: 18px; display: grid; gap: 21px; }
+    .budget-row { display: grid; gap: 7px; }
+    .budget-label { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+    .budget-label span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .track { height: 7px; border-radius: 9px; overflow: hidden; background: var(--panel-soft); border: 1px solid var(--line); }
+    .fill { height: 100%; min-width: 0; border-radius: inherit; background: var(--accent); transition: width .25s ease; }
+    .fill.green { background: var(--green); }
+    .fill.blue { background: var(--blue); }
+    .hardware-note { padding: 11px 12px; border-radius: 8px; color: var(--muted); background: var(--panel-soft); font-size: 11px; line-height: 1.45; }
+    .timeline-panel { overflow: hidden; }
+    .timeline-bar { padding: 16px 18px; display: flex; align-items: center; gap: 16px; border-bottom: 1px solid var(--line); }
+    .timeline-bar h2 { margin-right: auto; }
+    .filters { display: flex; gap: 2px; padding: 3px; border-radius: 8px; background: var(--panel-soft); }
+    .filter { border: 0; border-radius: 6px; padding: 6px 9px; color: var(--muted); background: transparent; cursor: pointer; font-size: 11px; }
+    .filter:hover { color: var(--ink); }
+    .filter.active { color: var(--ink); background: var(--panel); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .timeline { position: relative; padding: 8px 18px 12px; }
+    .timeline::before { content: ""; position: absolute; top: 19px; bottom: 22px; left: 35px; width: 1px; background: var(--line); }
+    details.event { position: relative; border-bottom: 1px solid var(--line); }
+    details.event:last-child { border-bottom: 0; }
+    summary { list-style: none; display: grid; grid-template-columns: 35px minmax(140px, .55fr) minmax(220px, 1.5fr) 72px; align-items: center; gap: 12px; min-height: 62px; padding: 7px 0; cursor: pointer; }
+    summary::-webkit-details-marker { display: none; }
+    .event-mark { position: relative; z-index: 1; width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; background: var(--panel-soft); border: 1px solid var(--line); color: var(--blue); font-size: 10px; font-weight: 800; }
+    .event.training .event-mark { color: var(--gold); }
+    .event.scoring .event-mark { color: var(--green); }
+    .event.hardware .event-mark { color: var(--accent); }
+    .event.failed .event-mark { color: var(--red); }
+    .event-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 650; }
+    .event-turn { display: block; margin-top: 3px; color: var(--muted); font-family: inherit; font-size: 10px; font-weight: 400; }
+    .event-summary { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+    .event-time { text-align: right; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+    .event-detail { margin: 0 0 12px 47px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .json-block { min-width: 0; padding: 11px; border-radius: 8px; background: var(--panel-soft); border: 1px solid var(--line); }
+    .json-title { margin-bottom: 7px; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .1em; }
+    pre { max-height: 330px; margin: 0; overflow: auto; color: var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .empty { padding: 70px 20px; text-align: center; color: var(--muted); }
+    .loading { opacity: .55; pointer-events: none; }
+    @media (max-width: 900px) {
+      .kpis { grid-template-columns: 1fr 1fr; }
+      .grid { grid-template-columns: 1fr; }
+      .run-picker { min-width: 0; }
+    }
+    @media (max-width: 620px) {
+      .topbar { padding: 10px 14px; gap: 10px; }
+      .brand span, .connection span { display: none; }
+      .run-picker { margin-left: auto; }
+      main { padding: 20px 14px 44px; }
+      .run-heading { align-items: flex-start; }
+      .kpis { grid-template-columns: 1fr 1fr; gap: 8px; }
+      .kpi { min-height: 102px; padding: 14px; }
+      .kpi-value { font-size: 21px; }
+      .timeline-bar { align-items: flex-start; flex-direction: column; gap: 10px; }
+      .filters { width: 100%; overflow-x: auto; }
+      summary { grid-template-columns: 35px minmax(112px, .7fr) 1.3fr; gap: 9px; }
+      .event-time { display: none; }
+      .event-detail { margin-left: 44px; grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="topbar">
+        <div class="brand"><div class="mark">OD</div><div><strong>Benchmark</strong><span>Run monitor</span></div></div>
+        <div class="run-picker">
+          <select id="run-select" aria-label="Select run"></select>
+          <button class="refresh" id="refresh-button" type="button">↻ Refresh</button>
+          <div class="connection" id="connection"><i class="pulse"></i><span>Updated now</span></div>
+        </div>
+      </div>
+    </header>
+    <main id="main">
+      <div class="empty">Looking for benchmark runs…</div>
+    </main>
+  </div>
+  <script>
+    const main = document.getElementById('main');
+    const select = document.getElementById('run-select');
+    const refreshButton = document.getElementById('refresh-button');
+    const connection = document.getElementById('connection');
+    let selectedRun = decodeURIComponent(location.hash.slice(1));
+    let activeFilter = 'all';
+    let runs = [];
+    let lastFingerprint = '';
+    let currentView = null;
+
+    const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+    const json = value => escapeHtml(JSON.stringify(value ?? {}, null, 2));
+    const number = value => new Intl.NumberFormat(undefined, {maximumFractionDigits: 2}).format(value ?? 0);
+    const compact = value => new Intl.NumberFormat(undefined, {notation:'compact', maximumFractionDigits:1}).format(value ?? 0);
+    const money = value => new Intl.NumberFormat(undefined, {style:'currency', currency:'USD', maximumFractionDigits:3}).format(value ?? 0);
+    const duration = seconds => {
+      if (seconds == null) return '—';
+      if (seconds < 60) return `${Math.round(seconds)}s`;
+      const hours = Math.floor(seconds / 3600), mins = Math.floor((seconds % 3600) / 60);
+      return hours ? `${hours}h ${mins}m` : `${mins}m`;
+    };
+    const score = value => {
+      if (value == null) return '—';
+      if (Math.abs(value) < .01 && value !== 0) return Number(value).toPrecision(3);
+      return Number(value).toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+    };
+    const pct = (used, limit) => limit ? Math.max(0, Math.min(100, used / limit * 100)) : 0;
+    const when = timestamp => timestamp ? new Date(timestamp * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
+    const runDate = timestamp => timestamp ? new Date(timestamp * 1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+    const titleCase = value => String(value || '').replaceAll('_', ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+    function chart(points, mode) {
+      if (!points.length) return '<div class="chart-empty">No trusted scores recorded yet</div>';
+      const W = window.innerWidth < 620 ? 350 : 760;
+      const H = 220, p = {l:52,r:22,t:23,b:34};
+      const ys = points.map(p => p.score);
+      let lo = Math.min(...ys), hi = Math.max(...ys);
+      const pad = Math.max((hi - lo) * .2, Math.abs(hi || 1) * .08, .0001);
+      lo -= pad; hi += pad;
+      const x = i => p.l + (points.length === 1 ? (W-p.l-p.r)/2 : i/(points.length-1)*(W-p.l-p.r));
+      const y = v => p.t + (hi-v)/(hi-lo)*(H-p.t-p.b);
+      const coords = points.map((point, i) => [x(i), y(point.score)]);
+      const line = coords.map((c,i) => `${i?'L':'M'} ${c[0].toFixed(1)} ${c[1].toFixed(1)}`).join(' ');
+      const area = `${line} L ${coords.at(-1)[0].toFixed(1)} ${H-p.b} L ${coords[0][0].toFixed(1)} ${H-p.b} Z`;
+      const bestValue = mode === 'minimize' ? Math.min(...ys) : Math.max(...ys);
+      const ticks = Array.from({length:4}, (_,i) => lo + (hi-lo)*i/3);
+      return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Objective score over evaluation events">
+        ${ticks.map(v => `<line class="axis" x1="${p.l}" y1="${y(v)}" x2="${W-p.r}" y2="${y(v)}"/><text class="chart-label" x="${p.l-9}" y="${y(v)+3}" text-anchor="end">${escapeHtml(score(v))}</text>`).join('')}
+        <path class="chart-area" d="${area}"/><path class="chart-line" d="${line}"/>
+        ${points.map((point,i) => `<g><circle class="chart-dot ${point.score===bestValue?'best':''}" cx="${x(i)}" cy="${y(point.score)}" r="4.5"><title>Turn ${point.turn}: ${point.metric} ${point.score}</title></circle>${point.score===bestValue?`<text class="score-pop" x="${x(i)}" y="${Math.max(12,y(point.score)-11)}" text-anchor="middle">${escapeHtml(score(point.score))}</text>`:''}</g>`).join('')}
+        <text class="chart-label" x="${p.l}" y="${H-9}">turn ${points[0].turn}</text><text class="chart-label" x="${W-p.r}" y="${H-9}" text-anchor="end">turn ${points.at(-1).turn}</text>
+      </svg>`;
+    }
+
+    function bestValue(view) {
+      if (view.submitted_score) return {value:view.submitted_score.score, metric:view.submitted_score.metric, note:'accepted submission'};
+      if (view.best_candidate?.score != null) return {value:view.best_candidate.score, metric:view.best_candidate.metric || view.objective.metric, note:view.best_candidate.candidate_id || 'best candidate'};
+      if (view.score_points.length) {
+        const sorted = [...view.score_points].sort((a,b) => view.objective.mode === 'minimize' ? a.score-b.score : b.score-a.score);
+        return {value:sorted[0].score, metric:sorted[0].metric, note:'best evaluated candidate'};
+      }
+      return {value:null, metric:view.objective.metric || 'score', note:'waiting for evaluation'};
+    }
+
+    function render(view) {
+      const openEvents = new Set(
+        [...document.querySelectorAll('details.event[open]')].map(element => element.dataset.eventKey)
+      );
+      currentView = view;
+      const best = bestValue(view), u = view.usage, t = view.training, e = view.evaluation;
+      const trainingPct = pct(t.seconds_used, t.seconds_limit), evalPct = pct(e.used, e.limit), turnsPct = pct(u.turns, u.turns_limit);
+      const hardware = t.hardware?.description || [t.hardware?.accelerator, t.hardware?.memory].filter(Boolean).join(' · ') || 'No training hardware used yet';
+      const filtered = activeFilter === 'all' ? view.timeline : view.timeline.filter(item => item.category === activeFilter);
+      main.innerHTML = `
+        <section class="run-heading">
+          <div><div class="eyebrow">${escapeHtml(view.task)}</div><h1>${escapeHtml(view.model)}</h1><div class="meta">${escapeHtml(view.run_id)} · started ${escapeHtml(runDate(view.started_at))} · <span id="elapsed-value">${escapeHtml(duration(view.elapsed_seconds))}</span> elapsed</div></div>
+          <div class="status ${view.is_running?'':'ended'}">${escapeHtml(view.is_running ? 'Run in progress' : titleCase(view.status))}</div>
+        </section>
+        <section class="kpis">
+          <div class="panel kpi"><div class="kpi-label">Best ${escapeHtml(best.metric)}<span class="kpi-icon">↗</span></div><div class="kpi-value">${escapeHtml(score(best.value))}</div><div class="kpi-note">${escapeHtml(best.note)}</div></div>
+          <div class="panel kpi"><div class="kpi-label">Training used<span class="kpi-icon">◷</span></div><div class="kpi-value">${escapeHtml(duration(t.seconds_used))}</div><div class="kpi-note">${t.seconds_limit ? `${trainingPct.toFixed(1)}% of ${duration(t.seconds_limit)}` : 'No configured limit found'}</div></div>
+          <div class="panel kpi"><div class="kpi-label">Model usage<span class="kpi-icon">T</span></div><div class="kpi-value">${escapeHtml(compact(u.tokens))}</div><div class="kpi-note">${escapeHtml(`${u.turns} turns · ${money(u.cost)}`)}</div></div>
+          <div class="panel kpi"><div class="kpi-label">Tool calls<span class="kpi-icon">⌘</span></div><div class="kpi-value">${escapeHtml(number(u.tool_calls))}</div><div class="kpi-note">${u.tool_errors ? `${u.tool_errors} failed` : 'All calls returned successfully'}</div></div>
+        </section>
+        <section class="grid">
+          <div class="panel"><div class="panel-head"><div><h2>Trusted score progression</h2><div class="subhead">${escapeHtml(view.objective.metric || 'objective')} · ${escapeHtml(view.objective.mode || 'tracked')} · ${view.score_points.length} evaluations</div></div></div><div class="chart-wrap">${chart(view.score_points, view.objective.mode)}</div></div>
+          <div class="panel"><div class="panel-head"><div><h2>Run budgets</h2><div class="subhead">Latest values reported by the harness</div></div></div><div class="budget-body">
+            ${budgetRow('Training compute', duration(t.seconds_used), duration(t.seconds_limit), trainingPct, '')}
+            ${budgetRow('Evaluation calls', number(e.used), e.limit == null ? '—' : number(e.limit), evalPct, 'green')}
+            ${budgetRow('Agent turns', number(u.turns), u.turns_limit == null ? '—' : number(u.turns_limit), turnsPct, 'blue')}
+            <div class="hardware-note"><strong>${escapeHtml(t.hardware?.id || 'Training')}</strong><br>${escapeHtml(hardware)}</div>
+          </div></div>
+        </section>
+        <section class="panel timeline-panel">
+          <div class="timeline-bar"><h2>Tool call timeline <span class="subhead">${view.timeline.length} total</span></h2><div class="filters" role="group" aria-label="Filter calls">${['all','training','scoring','hardware','workspace'].map(name => `<button class="filter ${activeFilter===name?'active':''}" data-filter="${name}">${titleCase(name)}</button>`).join('')}</div></div>
+          <div class="timeline">${filtered.length ? filtered.slice().reverse().map(eventRow).join('') : '<div class="empty">No tool calls in this category</div>'}</div>
+        </section>`;
+      document.querySelectorAll('details.event').forEach(element => {
+        if (openEvents.has(element.dataset.eventKey)) element.open = true;
+      });
+      document.querySelectorAll('.filter').forEach(button => button.addEventListener('click', () => { activeFilter = button.dataset.filter; render(view); }));
+    }
+
+    function budgetRow(label, used, limit, percent, color) {
+      return `<div class="budget-row"><div class="budget-label"><span>${escapeHtml(label)}</span><span>${escapeHtml(used)} / ${escapeHtml(limit)}</span></div><div class="track"><div class="fill ${color}" style="width:${percent.toFixed(2)}%"></div></div></div>`;
+    }
+
+    function eventRow(event) {
+      const initials = {workspace_exec:'sh',workspace_apply_patch:'Δ',train_start:'tr',train_continue:'tr',train_stop:'■',evaluate:'ev',analyze_for_hw:'hw',verify_on_hw:'hw',submit:'✓'}[event.name] || '·';
+      const eventKey = `${event.turn}:${event.name}`;
+      return `<details data-event-key="${escapeHtml(eventKey)}" class="event ${escapeHtml(event.category)} ${event.ok?'':'failed'}"><summary><span class="event-mark">${escapeHtml(initials)}</span><span class="event-name">${escapeHtml(event.name)}<small class="event-turn">turn ${escapeHtml(event.turn)}</small></span><span class="event-summary">${escapeHtml(event.summary)}</span><time class="event-time">${escapeHtml(when(event.at))}</time></summary><div class="event-detail"><div class="json-block"><div class="json-title">Arguments</div><pre>${json(event.arguments)}</pre></div><div class="json-block"><div class="json-title">Result</div><pre>${json(event.result)}</pre></div></div></details>`;
+    }
+
+    async function refreshRuns() {
+      refreshButton.disabled = true;
+      try {
+        const response = await fetch('/api/runs', {cache:'no-store'});
+        if (!response.ok) throw new Error('server error');
+        runs = (await response.json()).runs;
+        connection.classList.remove('offline');
+        connection.querySelector('span').textContent = 'Updated now';
+        if (!runs.length) {
+          select.innerHTML = '<option>No runs found</option>';
+          main.innerHTML = '<div class="empty">No runs with an events.jsonl log were found.</div>';
+          return;
+        }
+        if (!runs.some(run => run.run_id === selectedRun)) selectedRun = runs[0].run_id;
+        select.innerHTML = runs.map(run => `<option value="${escapeHtml(run.run_id)}" ${run.run_id===selectedRun?'selected':''}>${run.is_running?'● ':''}${escapeHtml(run.task)} · ${escapeHtml(run.model)} · ${escapeHtml(runDate(run.started_at))}</option>`).join('');
+        await refreshView();
+      } catch (error) {
+        connection.classList.add('offline');
+        connection.querySelector('span').textContent = 'Unavailable';
+      } finally {
+        refreshButton.disabled = false;
+      }
+    }
+
+    async function refreshView(force=false) {
+      if (!selectedRun) return;
+      try {
+        const response = await fetch(`/api/runs/${encodeURIComponent(selectedRun)}`, {cache:'no-store'});
+        if (!response.ok) throw new Error('run unavailable');
+        const view = await response.json();
+        const fingerprint = `${view.updated_at}:${view.status}`;
+        if (force || fingerprint !== lastFingerprint) { render(view); lastFingerprint = fingerprint; }
+      } catch (error) {
+        connection.classList.add('offline');
+      }
+    }
+
+    select.addEventListener('change', () => {
+      selectedRun = select.value;
+      history.replaceState(null, '', `#${encodeURIComponent(selectedRun)}`);
+      activeFilter = 'all'; lastFingerprint = ''; refreshView(true);
+    });
+    refreshButton.addEventListener('click', refreshRuns);
+    refreshRuns();
+    setInterval(() => {
+      const elapsed = document.getElementById('elapsed-value');
+      if (elapsed && currentView?.is_running) {
+        elapsed.textContent = duration(Date.now() / 1000 - currentView.started_at);
+      }
+    }, 1000);
+  </script>
+</body>
+</html>

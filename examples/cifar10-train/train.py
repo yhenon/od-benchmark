@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import torch
@@ -15,8 +16,15 @@ model = nn.Sequential(nn.Flatten(), nn.Linear(3 * 32 * 32, 10))
 optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 loss_function = nn.CrossEntropyLoss()
 output = Path("/job/output")
+start_epoch = 0
+resume_checkpoint = os.environ.get("ODBENCH_RESUME_CHECKPOINT")
+if resume_checkpoint:
+    saved = torch.load(resume_checkpoint, map_location="cpu")
+    model.load_state_dict(saved["model"])
+    optimizer.load_state_dict(saved["optimizer"])
+    start_epoch = int(saved["epoch"]) + 1
 
-for epoch in range(2):
+for epoch in range(start_epoch, 2):
     model.train()
     total_loss = 0.0
     for images, targets in loader:
@@ -39,7 +47,8 @@ for epoch in range(2):
         artifact,
         input_names=["input"],
         output_names=["logits"],
-        dynamo=True,
+        opset_version=17,
+        dynamo=False,
         external_data=False,
     )
     decision = epoch_end(
@@ -48,7 +57,12 @@ for epoch in range(2):
         checkpoint=checkpoint.name,
         preprocess="preprocess.py",
         postprocess="postprocess.py",
-        metrics={"train_loss": total_loss / len(loader)},
+        metrics={
+            "train_loss": total_loss / len(loader),
+            "odbench_cpus": os.environ.get("ODBENCH_CPUS"),
+            "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
+            "resumed": resume_checkpoint is not None,
+        },
     )
     if decision.stop:
         break

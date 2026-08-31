@@ -23,7 +23,8 @@ from .worker import child_main
 
 
 HOOK_SIZE_LIMIT = 1024 * 1024
-MODEL_SIZE_LIMIT = 2 * 1024 * 1024 * 1024
+MODEL_SIZE_LIMIT = 16 * 1024 * 1024
+DETECTION_STRUCT = struct.Struct("!fffffi")
 
 
 def _contained_file(root: Path, relative_path: Any, size_limit: int) -> Path:
@@ -126,6 +127,37 @@ def _encode_image(image: Image.Image) -> bytes:
     return output.getvalue()
 
 
+def _decode_detection_response(
+    response: bytes,
+    *,
+    image: Image.Image,
+    class_ids: set[int],
+    maximum_detections: int,
+) -> list[dict[str, Any]]:
+    if len(response) < 5 or response[:1] != b"D":
+        raise ValueError("postprocess did not return object detections")
+    count = struct.unpack("!I", response[1:5])[0]
+    if count > maximum_detections or len(response) != 5 + count * DETECTION_STRUCT.size:
+        raise ValueError("postprocess returned an invalid number of detections")
+    detections: list[dict[str, Any]] = []
+    for index in range(count):
+        offset = 5 + index * DETECTION_STRUCT.size
+        x1, y1, x2, y2, score, category = DETECTION_STRUCT.unpack_from(response, offset)
+        if category not in class_ids:
+            raise ValueError("postprocess returned an out-of-range detection class")
+        if not (0 <= x1 < x2 <= image.width and 0 <= y1 < y2 <= image.height):
+            raise ValueError("postprocess returned a box outside the original image")
+        detections.append(
+            {
+                "bbox": [x1, y1, x2 - x1, y2 - y1],
+                "score": score,
+                "class": category,
+            }
+        )
+    detections.sort(key=lambda item: item["score"], reverse=True)
+    return detections
+
+
 def run_provider(submission_directory: Path, timeout: float) -> dict[str, Any]:
     staged_submission, _ = _stage_submission(submission_directory)
     submission_sha256 = _submission_digest(staged_submission)
@@ -141,13 +173,16 @@ def run_provider(submission_directory: Path, timeout: float) -> dict[str, Any]:
 
         dataset_root, dataset_manifest = _load_eval_manifest()
         predictions: list[dict[str, Any]] = []
+        task = dataset_manifest["task"]
         number_of_classes = int(dataset_manifest["num_classes"])
+        class_ids = {int(value) for value in dataset_manifest.get("class_ids", [])}
+        maximum_detections = int(dataset_manifest.get("max_detections", 500))
         for example_id, image in eval_dataset.iter_examples(dataset_root):
             send_frame(request_fd, _encode_image(image))
             response = receive_frame(
                 response_fd, maximum_size=MAX_RESPONSE_BYTES, timeout=timeout
             )
-            if len(response) != 9 or response[:1] != b"P":
+            if response in {b"E1", b"E2", b"E3", b"E"}:
                 phases = {
                     b"E1": "image decoding or preprocessing",
                     b"E2": "ONNX inference",
@@ -157,10 +192,26 @@ def run_provider(submission_directory: Path, timeout: float) -> dict[str, Any]:
                 raise RuntimeError(
                     f"submission failed during {phase} for example {example_id}"
                 )
-            prediction = struct.unpack("!q", response[1:])[0]
-            if not 0 <= prediction < number_of_classes:
-                raise RuntimeError("postprocess returned an out-of-range class index")
-            predictions.append({"id": example_id, "class": prediction})
+            if task == "image_classification":
+                if len(response) != 9 or response[:1] != b"P":
+                    raise RuntimeError("postprocess did not return a class index")
+                prediction = struct.unpack("!q", response[1:])[0]
+                if not 0 <= prediction < number_of_classes:
+                    raise RuntimeError("postprocess returned an out-of-range class index")
+                predictions.append({"id": example_id, "class": prediction})
+            elif task == "object_detection":
+                try:
+                    detections = _decode_detection_response(
+                        response,
+                        image=image,
+                        class_ids=class_ids,
+                        maximum_detections=maximum_detections,
+                    )
+                except ValueError as error:
+                    raise RuntimeError(f"{error} for example {example_id}") from error
+                predictions.append({"id": example_id, "detections": detections})
+            else:
+                raise RuntimeError(f"unsupported evaluation task: {task}")
 
         send_frame(request_fd, b"")
         os.close(request_fd)
@@ -170,9 +221,14 @@ def run_provider(submission_directory: Path, timeout: float) -> dict[str, Any]:
         if status != 0:
             raise RuntimeError("submission worker exited abnormally")
 
+        prediction_type = (
+            "classification_predictions"
+            if task == "image_classification"
+            else "object_detection_predictions"
+        )
         return {
             "schema_version": 1,
-            "type": "classification_predictions",
+            "type": prediction_type,
             "dataset": dataset_manifest["id"],
             "split": dataset_manifest["split"],
             "num_examples": len(predictions),

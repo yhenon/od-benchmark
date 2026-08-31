@@ -6,9 +6,10 @@ ARG DATASET=cifar10
 FROM ${PYTHON_IMAGE} AS eval-dataset-builder
 
 ARG DATASET
-RUN python -m pip install --no-cache-dir numpy==2.2.6
+RUN python -m pip install --no-cache-dir numpy==2.2.6 Pillow==11.3.0
 COPY docker/eval/datasets/${DATASET}/prepare.py /usr/local/bin/prepare-eval-dataset
-RUN python /usr/local/bin/prepare-eval-dataset /dataset /labels
+RUN --mount=type=bind,from=odbench_dataset_source,source=.,target=/source,ro \
+    python /usr/local/bin/prepare-eval-dataset /dataset /labels /source
 
 
 FROM scratch AS labels-export

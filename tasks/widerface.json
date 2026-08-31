@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "widerface",
+  "dataset": "widerface",
+  "prompts": {
+    "task": "tasks/widerface.md",
+    "system": "prompts/agent-system.md"
+  },
+  "training_hardware": "hardware/training/lan-rtx3070-8gb.json",
+  "target_hardware": "hardware/targets/nucleo-n657x0-q.json",
+  "images": {
+    "agent": "od-benchmark-agent:widerface-dev",
+    "trainer": "od-benchmark-trainer:widerface-dev",
+    "evaluator": "od-benchmark-evaluator:widerface-dev"
+  },
+  "evaluation": {
+    "metric": "AP",
+    "objective": "maximize"
+  },
+  "limits": {
+    "max_onnx_bytes": 16777216,
+    "max_agent_turns": 100,
+    "max_evaluations": 20,
+    "max_train_starts": 20,
+    "max_train_job_seconds": 7200,
+    "max_total_train_seconds": 14400,
+    "max_command_seconds": 120,
+    "max_inference_runtime_seconds": 0.05
+  },
+  "model": {
+    "max_output_tokens": 16384,
+    "max_total_tokens": null,
+    "max_cost": null,
+    "reasoning_effort": null,
+    "request_timeout_seconds": 300,
+    "max_transport_retries": 3,
+    "max_response_retries": 3
+  }
+}

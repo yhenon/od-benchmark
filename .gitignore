@@ -218,4 +218,15 @@ __marimo__/
 .streamlit/secrets.toml
 
 implementation-plan.md
+
+# Local benchmark datasets (large and/or private evaluation assets)
+data/
+
+# Local benchmark inputs, outcomes, scratch state, and editor files
+.DS_Store
+.idea/
+.openrouter_key
+.odbench/
+tmp/
+runs/
 project.md

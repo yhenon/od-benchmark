@@ -29,13 +29,23 @@ single-file Python hooks. Manifest schema version 1 is:
 `preprocess(image)` receives one RGB `PIL.Image`. It returns either a NumPy
 array for a single-input model or a mapping from ONNX input names to NumPy
 arrays. `postprocess(outputs)` receives a mapping from ONNX output names to
-NumPy arrays and returns one integer class index. Inference is single-example,
-CPU-only, and uses ONNX Runtime.
+NumPy arrays. For classification it returns one integer class index. For object
+detection it returns a mapping with NumPy `boxes`, `scores`, and `classes`
+arrays; boxes are `[N, 4]` original-image `xyxy` coordinates and at most 500
+detections are accepted. A hook declared as `postprocess(outputs, image_size)`
+also receives the original `(width, height)`, which is useful for reversing
+resize or letterbox geometry. Inference is single-example, CPU-only, and uses
+ONNX Runtime.
+
+The ONNX artifact must be self-contained and no larger than 16 MiB
+(16,777,216 bytes). Hooks remain limited to 1 MiB each.
 
 The provider returns a prediction document to the trusted outer loop. It
-contains opaque example IDs, predicted classes, and a SHA-256 digest over the
+contains opaque example IDs, bounded predictions, and a SHA-256 digest over the
 artifact and hooks. `docker/eval/score.py` joins this document with the private
-label document and emits aggregate top-1 accuracy.
+label document and emits the dataset's aggregate metrics. VisDrone uses the
+official DET IoU thresholds (0.50:0.05:0.95), ignored-region treatment, and a
+500-detection cap.
 
 ## Security boundary
 

@@ -9,7 +9,7 @@ import time
 
 
 MAX_IMAGE_BYTES = 64 * 1024 * 1024
-MAX_RESPONSE_BYTES = 64
+MAX_RESPONSE_BYTES = 64 * 1024
 
 
 def _write_all(file_descriptor: int, data: bytes) -> None:

@@ -101,6 +101,8 @@ def main(dataset_destination: Path, label_destination: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: prepare.py DATASET_DESTINATION LABEL_DESTINATION")
+    if len(sys.argv) not in {3, 4}:
+        raise SystemExit(
+            "usage: prepare.py DATASET_DESTINATION LABEL_DESTINATION [SOURCE]"
+        )
     main(Path(sys.argv[1]), Path(sys.argv[2]))

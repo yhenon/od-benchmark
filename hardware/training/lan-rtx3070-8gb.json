@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "id": "lan-rtx3070-8gb",
+  "accelerator": "cuda",
+  "description": "Single NVIDIA RTX 3070 Laptop GPU worker on the trusted local network.",
+  "cpus": 8,
+  "memory": "12g",
+  "shared_memory": "2g",
+  "pids": 512,
+  "gpus": "all",
+  "environment": {
+    "MKL_NUM_THREADS": "8",
+    "NUMEXPR_NUM_THREADS": "8",
+    "ODBENCH_ACCELERATOR": "cuda",
+    "ODBENCH_CPUS": "8",
+    "ODBENCH_GPU_MEMORY": "8g",
+    "ODBENCH_MEMORY": "12g",
+    "ODBENCH_SHARED_MEMORY": "2g",
+    "OMP_NUM_THREADS": "8",
+    "OPENBLAS_NUM_THREADS": "8"
+  }
+}

@@ -19,6 +19,11 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+try:
+    from .workspace_archive import export_from_container
+except ImportError:  # Direct execution via docker/trainer.
+    from workspace_archive import export_from_container
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_JOBS_ROOT = REPO_ROOT / ".odbench" / "jobs"
@@ -32,6 +37,10 @@ DEFAULT_IGNORES = (
     ".ruff_cache",
 )
 EVENT_ID_PATTERN = re.compile(r"^epoch-[0-9]{6}$")
+ENVIRONMENT_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+MAX_ONNX_BYTES = 16 * 1024 * 1024
+MAX_CHECKPOINT_BYTES = 4 * 1024**3
+RESUME_CHECKPOINT_RELATIVE = ".odbench_resume/checkpoint.pt"
 
 
 def utc_now() -> str:
@@ -201,6 +210,61 @@ def copy_regular(source_root: Path, relative: str, destination: Path, limit: int
     return digest.hexdigest()
 
 
+def stage_resume_checkpoint(source: Path, input_root: Path) -> dict[str, Any]:
+    source_stat = source.lstat()
+    if source.is_symlink() or not stat.S_ISREG(source_stat.st_mode):
+        raise ValueError("resume checkpoint must be a regular non-symlink file")
+    source = source.resolve()
+    if source_stat.st_size > MAX_CHECKPOINT_BYTES:
+        raise ValueError("resume checkpoint exceeds 4 GiB")
+    destination = input_root / RESUME_CHECKPOINT_RELATIVE
+    destination.parent.mkdir(parents=True, exist_ok=False)
+    digest = hashlib.sha256()
+    with source.open("rb") as input_stream, destination.open("xb") as output_stream:
+        for chunk in iter(lambda: input_stream.read(1024 * 1024), b""):
+            output_stream.write(chunk)
+            digest.update(chunk)
+    destination.chmod(0o444)
+    return {
+        "input_path": f"/job/input/{RESUME_CHECKPOINT_RELATIVE}",
+        "sha256": digest.hexdigest(),
+        "bytes": source_stat.st_size,
+    }
+
+
+def container_log_tails(container: str, limit: int = 4000) -> dict[str, str]:
+    result = subprocess.run(
+        ["docker", "logs", "--tail", "200", container],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    tails = {}
+    if result.stdout.strip():
+        tails["stdout_tail"] = result.stdout.strip()[-limit:]
+    if result.stderr.strip():
+        tails["stderr_tail"] = result.stderr.strip()[-limit:]
+    return tails
+
+
+def metric_context(evaluation: dict[str, Any] | None) -> dict[str, Any]:
+    """Describe why training diagnostics and trusted evaluation are not comparable."""
+    return {
+        "train_metrics": {
+            "producer": "training_script",
+            "model_stage": "agent_defined_often_float_or_pre_quantization",
+            "dataset_split": "agent_defined_often_public_development",
+            "directly_comparable_to_evaluation": False,
+        },
+        "evaluation.metrics": {
+            "producer": "trusted_evaluator",
+            "model_stage": "published_onnx_submission",
+            "dataset": evaluation.get("dataset") if evaluation is not None else None,
+            "split": evaluation.get("split") if evaluation is not None else None,
+        },
+    }
+
+
 def pause_and_meter(root: Path, state: dict[str, Any]) -> None:
     run(["docker", "pause", state["container"]], capture=True)
     now = time.time()
@@ -214,7 +278,7 @@ def process_event(
     root: Path,
     state: dict[str, Any],
     event_path: Path,
-    labels: Path,
+    labels: Path | None,
 ) -> dict[str, Any]:
     if event_path.stat().st_size > 1024 * 1024:
         raise ValueError("epoch event exceeds 1 MiB")
@@ -247,7 +311,12 @@ def process_event(
     checkpoint_path = (
         safe_relative(checkpoint_value, "checkpoint") if checkpoint_value is not None else None
     )
-    artifact_hash = copy_regular(root / "output", artifact_path, submission / "model.onnx", 2 * 1024**3)
+    artifact_hash = copy_regular(
+        root / "output",
+        artifact_path,
+        submission / "model.onnx",
+        state["max_onnx_bytes"],
+    )
     copy_regular(root / "input", preprocess_path, submission / "preprocess.py", 1024**2)
     copy_regular(root / "input", postprocess_path, submission / "postprocess.py", 1024**2)
     checkpoint_hash = None
@@ -267,34 +336,47 @@ def process_event(
 
     evaluation = None
     evaluation_error = None
-    try:
-        environment = os.environ.copy()
-        environment["ODBENCH_DATASET"] = state["dataset"]
-        result = subprocess.run(
-            [str(REPO_ROOT / "docker" / "evaluator"), "evaluate", str(submission), str(labels)],
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=environment,
-        )
-        evaluation = json.loads(result.stdout)
-    except subprocess.CalledProcessError as error:
-        detail = (error.stderr or str(error)).strip()
-        evaluation_error = detail[-4000:]
-    except Exception as error:
-        evaluation_error = str(error)
+    if labels is not None:
+        try:
+            environment = os.environ.copy()
+            environment["ODBENCH_DATASET"] = state["dataset"]
+            result = subprocess.run(
+                [
+                    str(REPO_ROOT / "docker" / "evaluator"),
+                    "evaluate",
+                    str(submission),
+                    str(labels),
+                ],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment,
+            )
+            evaluation = json.loads(result.stdout)
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or str(error)).strip()
+            evaluation_error = detail[-4000:]
+        except Exception as error:
+            evaluation_error = str(error)
 
     notification = {
         "schema_version": 1,
-        "type": "train_epoch_complete" if evaluation is not None else "train_epoch_failed",
+        "type": (
+            "train_epoch_staged"
+            if labels is None
+            else "train_epoch_complete" if evaluation is not None else "train_epoch_failed"
+        ),
         "job_id": state["job_id"],
         "event_id": event_id,
         "epoch": epoch,
         "train_metrics": event.get("metrics", {}),
         "evaluation": evaluation,
         "evaluation_error": evaluation_error,
+        "metric_context": metric_context(evaluation),
         "artifact_sha256": artifact_hash,
+        "artifact_bytes": (submission / "model.onnx").stat().st_size,
+        "max_onnx_bytes": state["max_onnx_bytes"],
         "checkpoint_sha256": checkpoint_hash,
         "metering": {
             "active_wall_seconds": state["active_seconds"],
@@ -308,16 +390,59 @@ def process_event(
     return notification
 
 
+def record_event_evaluation(
+    root: Path,
+    state: dict[str, Any],
+    event_id: str,
+    *,
+    evaluation: dict[str, Any] | None,
+    evaluation_error: str | None,
+) -> dict[str, Any]:
+    """Attach a trusted evaluation performed outside the training host."""
+
+    pending = state.get("pending")
+    if pending is None or pending["event"].get("event_id") != event_id:
+        raise ValueError("job is not awaiting that event evaluation")
+    current = pending.get("notification")
+    if not isinstance(current, dict):
+        raise ValueError("pending event notification is invalid")
+    if current.get("type") != "train_epoch_staged":
+        return current
+    if evaluation is not None and not isinstance(evaluation, dict):
+        raise ValueError("evaluation must be an object or null")
+    if evaluation_error is not None and (
+        not isinstance(evaluation_error, str)
+        or not evaluation_error
+        or len(evaluation_error.encode("utf-8")) > 16 * 1024
+    ):
+        raise ValueError("evaluation_error is invalid")
+    if (evaluation is None) == (evaluation_error is None):
+        raise ValueError("provide exactly one of evaluation or evaluation_error")
+
+    notification = {
+        **current,
+        "type": "train_epoch_complete" if evaluation is not None else "train_epoch_failed",
+        "evaluation": evaluation,
+        "evaluation_error": evaluation_error,
+        "metric_context": metric_context(evaluation),
+    }
+    atomic_json(root / "results" / f"{event_id}.json", notification)
+    state["pending"] = {**pending, "notification": notification}
+    write_state(root, state)
+    return notification
+
+
 def command_build(arguments: argparse.Namespace) -> None:
     dataset = arguments.dataset
     base_image = arguments.base_image or f"od-benchmark-agent:{dataset}-dev"
     image = arguments.image or f"od-benchmark-trainer:{dataset}-dev"
+    dockerfile = "Dockerfile.train.cuda" if arguments.cuda else "Dockerfile.train"
     run(
         [
             "docker",
             "build",
             "--file",
-            str(REPO_ROOT / "Dockerfile.train"),
+            str(REPO_ROOT / dockerfile),
             "--build-arg",
             f"DATASET={dataset}",
             "--build-arg",
@@ -338,13 +463,21 @@ def command_start(arguments: argparse.Namespace) -> None:
         (root / name).mkdir(parents=True, exist_ok=True)
 
     imported = None
+    resume_checkpoint = None
     try:
         if arguments.workspace is not None:
             source = arguments.workspace.resolve()
         else:
             imported = root / "imported-workspace"
             imported.mkdir()
-            run(["docker", "cp", f"{arguments.agent_container}:/workspace/.", str(imported)])
+            export_from_container(
+                arguments.agent_container,
+                ".",
+                imported,
+                exclude_agent_state=True,
+                max_files=arguments.max_files,
+                max_bytes=arguments.max_bytes,
+            )
             source = imported
         snapshot_hash, file_count, byte_count = snapshot_workspace(
             source,
@@ -352,6 +485,10 @@ def command_start(arguments: argparse.Namespace) -> None:
             max_files=arguments.max_files,
             max_bytes=arguments.max_bytes,
         )
+        if arguments.resume_checkpoint is not None:
+            resume_checkpoint = stage_resume_checkpoint(
+                arguments.resume_checkpoint, root / "input"
+            )
     except Exception:
         shutil.rmtree(root, ignore_errors=True)
         raise
@@ -361,14 +498,34 @@ def command_start(arguments: argparse.Namespace) -> None:
 
     entrypoint = safe_relative(arguments.entrypoint, "entrypoint")
     if not (root / "input" / entrypoint).is_file():
+        snapshot_files = sorted(
+            path.relative_to(root / "input").as_posix()
+            for path in (root / "input").rglob("*")
+            if path.is_file()
+        )
         shutil.rmtree(root, ignore_errors=True)
-        raise SystemExit("entrypoint is absent from the workspace snapshot")
+        preview = ", ".join(snapshot_files[:20]) or "<empty>"
+        raise SystemExit(f"entrypoint is absent from the workspace snapshot; files: {preview}")
     image = arguments.image or f"od-benchmark-trainer:{dataset}-dev"
     container = f"odbench-train-{job_id}"
     started_at = time.time()
     training_args = arguments.training_args
     if training_args[:1] == ["--"]:
         training_args = training_args[1:]
+    training_environment: dict[str, str] = {}
+    for item in arguments.environment:
+        name, separator, value = item.partition("=")
+        if (
+            not separator
+            or not ENVIRONMENT_NAME_PATTERN.fullmatch(name)
+            or name in {"HOME", "ODBENCH_JOB_ID", "ODBENCH_RESUME_CHECKPOINT"}
+            or "\x00" in value
+            or len(value.encode("utf-8")) > 4096
+        ):
+            raise SystemExit(f"invalid training environment entry: {item!r}")
+        training_environment[name] = value
+    if resume_checkpoint is not None:
+        training_environment["ODBENCH_RESUME_CHECKPOINT"] = resume_checkpoint["input_path"]
     state = {
         "schema_version": 1,
         "job_id": job_id,
@@ -380,11 +537,21 @@ def command_start(arguments: argparse.Namespace) -> None:
         "snapshot_sha256": snapshot_hash,
         "snapshot_files": file_count,
         "snapshot_bytes": byte_count,
+        "resume_checkpoint": resume_checkpoint,
         "created_at": utc_now(),
         "started_at": started_at,
         "active_started_at": started_at,
         "active_seconds": 0.0,
         "budget_seconds": arguments.budget_seconds,
+        "max_onnx_bytes": arguments.max_onnx_bytes,
+        "hardware": {
+            "cpus": arguments.cpus,
+            "memory": arguments.memory,
+            "shared_memory": arguments.shm_size,
+            "pids": arguments.pids,
+            "gpus": arguments.gpus,
+            "environment": training_environment,
+        },
         "last_epoch": -1,
         "pending": None,
         "status": "starting",
@@ -414,6 +581,8 @@ def command_start(arguments: argparse.Namespace) -> None:
         arguments.memory,
         "--memory-swap",
         arguments.memory,
+        "--shm-size",
+        arguments.shm_size,
         "--cpus",
         str(arguments.cpus),
         "--tmpfs",
@@ -432,10 +601,12 @@ def command_start(arguments: argparse.Namespace) -> None:
         f"ODBENCH_JOB_ID={job_id}",
         "--env",
         "HOME=/tmp",
-        image,
-        entrypoint,
-        *training_args,
     ]
+    if arguments.gpus is not None:
+        command.extend(["--gpus", arguments.gpus])
+    for name, value in sorted(training_environment.items()):
+        command.extend(["--env", f"{name}={value}"])
+    command.extend([image, entrypoint, *training_args])
     try:
         # `docker run --detach` prints the container ID. Keep the tool response
         # as one JSON document by capturing that implementation detail.
@@ -451,8 +622,10 @@ def command_start(arguments: argparse.Namespace) -> None:
 
 def command_await(arguments: argparse.Namespace) -> None:
     root = job_root(arguments.job_id)
-    labels = arguments.labels.resolve()
-    if not labels.is_file():
+    labels = arguments.labels.resolve() if arguments.labels is not None else None
+    if labels is None and not arguments.stage_only:
+        raise SystemExit("await requires --labels unless --stage-only is set")
+    if labels is not None and not labels.is_file():
         raise SystemExit(f"labels file does not exist: {labels}")
     while True:
         state = read_state(root)
@@ -466,19 +639,17 @@ def command_await(arguments: argparse.Namespace) -> None:
                 state["active_started_at"] = None
             state["status"] = "completed" if exit_code == 0 else "failed"
             write_state(root, state)
-            print(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "type": "train_job_finished",
-                        "job_id": state["job_id"],
-                        "status": state["status"],
-                        "exit_code": exit_code,
-                        "metering": {"active_wall_seconds": state["active_seconds"]},
-                    },
-                    sort_keys=True,
-                )
-            )
+            notification = {
+                "schema_version": 1,
+                "type": "train_job_finished",
+                "job_id": state["job_id"],
+                "status": state["status"],
+                "exit_code": exit_code,
+                "metering": {"active_wall_seconds": state["active_seconds"]},
+            }
+            if exit_code not in {None, 0} and status != "missing":
+                notification.update(container_log_tails(state["container"]))
+            print(json.dumps(notification, sort_keys=True))
             return
         active = state["active_seconds"]
         if state["active_started_at"] is not None:
@@ -489,7 +660,20 @@ def command_await(arguments: argparse.Namespace) -> None:
             state["active_started_at"] = None
             state["status"] = "budget_exhausted"
             write_state(root, state)
-            print(json.dumps({"type": "train_budget_exhausted", "job_id": state["job_id"]}))
+            print(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "type": "train_budget_exhausted",
+                        "job_id": state["job_id"],
+                        "metering": {
+                            "active_wall_seconds": state["active_seconds"],
+                            "budget_seconds": state["budget_seconds"],
+                        },
+                    },
+                    sort_keys=True,
+                )
+            )
             return
 
         for event_path in sorted((root / "events").glob("epoch-*.json")):
@@ -501,6 +685,30 @@ def command_await(arguments: argparse.Namespace) -> None:
                 print(json.dumps(notification, sort_keys=True))
                 return
         time.sleep(arguments.poll_seconds)
+
+
+def command_record_evaluation(arguments: argparse.Namespace) -> None:
+    root = job_root(arguments.job_id)
+    try:
+        encoded = sys.stdin.buffer.read(1024 * 1024 + 1)
+        if len(encoded) > 1024 * 1024:
+            raise ValueError("evaluation record exceeds 1 MiB")
+        document = json.loads(encoded)
+    except (ValueError, json.JSONDecodeError) as error:
+        raise SystemExit(f"invalid evaluation record: {error}") from error
+    if not isinstance(document, dict):
+        raise SystemExit("evaluation record must be an object")
+    try:
+        notification = record_event_evaluation(
+            root,
+            read_state(root),
+            arguments.event_id,
+            evaluation=document.get("evaluation"),
+            evaluation_error=document.get("evaluation_error"),
+        )
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    print(json.dumps(notification, sort_keys=True))
 
 
 def command_continue(arguments: argparse.Namespace) -> None:
@@ -531,18 +739,33 @@ def command_stop(arguments: argparse.Namespace) -> None:
     pending = state.get("pending")
     if pending is not None:
         event_id = pending["event"]["event_id"]
+        state["last_epoch"] = max(state["last_epoch"], pending["event"]["epoch"])
         atomic_json(
             root / "decisions" / f"{event_id}.json",
             {"schema_version": 1, "event_id": event_id, "action": "stop"},
         )
         run(["docker", "unpause", state["container"]], capture=True, check=False)
         time.sleep(0.5)
+    if state["active_started_at"] is not None:
+        state["active_seconds"] += time.time() - state["active_started_at"]
     run(["docker", "rm", "--force", state["container"]], capture=True, check=False)
     state["pending"] = None
     state["active_started_at"] = None
     state["status"] = "stopped"
     write_state(root, state)
-    print(json.dumps({"job_id": arguments.job_id, "action": "stop"}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "job_id": arguments.job_id,
+                "action": "stop",
+                "metering": {
+                    "active_wall_seconds": state["active_seconds"],
+                    "budget_seconds": state["budget_seconds"],
+                },
+            },
+            sort_keys=True,
+        )
+    )
 
 
 def command_status(arguments: argparse.Namespace) -> None:
@@ -569,6 +792,7 @@ def parser() -> argparse.ArgumentParser:
     build.add_argument("--dataset", default="cifar10")
     build.add_argument("--base-image")
     build.add_argument("--image")
+    build.add_argument("--cuda", action="store_true")
     build.set_defaults(function=command_build)
 
     start = subparsers.add_parser("start")
@@ -581,17 +805,28 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--budget-seconds", type=float, default=3600.0)
     start.add_argument("--max-files", type=int, default=10_000)
     start.add_argument("--max-bytes", type=int, default=256 * 1024 * 1024)
+    start.add_argument("--max-onnx-bytes", type=int, default=MAX_ONNX_BYTES)
     start.add_argument("--memory", default="8g")
+    start.add_argument("--shm-size", default="1g")
     start.add_argument("--cpus", type=float, default=4.0)
     start.add_argument("--pids", type=int, default=256)
+    start.add_argument("--gpus")
+    start.add_argument("--environment", action="append", default=[])
+    start.add_argument("--resume-checkpoint", type=Path)
     start.add_argument("training_args", nargs=argparse.REMAINDER)
     start.set_defaults(function=command_start)
 
     await_parser = subparsers.add_parser("await")
     await_parser.add_argument("job_id")
-    await_parser.add_argument("--labels", required=True, type=Path)
+    await_parser.add_argument("--labels", type=Path)
+    await_parser.add_argument("--stage-only", action="store_true")
     await_parser.add_argument("--poll-seconds", type=float, default=0.5)
     await_parser.set_defaults(function=command_await)
+
+    record = subparsers.add_parser("record-evaluation")
+    record.add_argument("job_id")
+    record.add_argument("event_id")
+    record.set_defaults(function=command_record_evaluation)
 
     continue_parser = subparsers.add_parser("continue")
     continue_parser.add_argument("job_id")
@@ -613,8 +848,25 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+def validate_arguments(arguments: argparse.Namespace) -> None:
+    if (
+        hasattr(arguments, "max_onnx_bytes")
+        and not 0 < arguments.max_onnx_bytes <= MAX_ONNX_BYTES
+    ):
+        raise SystemExit(f"max ONNX size must be between 1 and {MAX_ONNX_BYTES} bytes")
+    if hasattr(arguments, "cpus") and arguments.cpus <= 0:
+        raise SystemExit("CPU limit must be positive")
+    if hasattr(arguments, "pids") and arguments.pids <= 0:
+        raise SystemExit("PID limit must be positive")
+    if hasattr(arguments, "gpus") and arguments.gpus is not None and (
+        not arguments.gpus or len(arguments.gpus.encode("utf-8")) > 256
+    ):
+        raise SystemExit("GPU request is invalid")
+
+
 def main() -> None:
     arguments = parser().parse_args()
+    validate_arguments(arguments)
     try:
         arguments.function(arguments)
     except subprocess.CalledProcessError as error:

@@ -1,0 +1,8 @@
+*
+!Dockerfile
+!Dockerfile.eval
+!Dockerfile.train
+!LICENSE
+!README.md
+!docker/
+!docker/**

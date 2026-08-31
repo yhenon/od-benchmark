@@ -9,9 +9,15 @@ base_image="${ODBENCH_BASE_IMAGE:-od-benchmark-agent:base-dev}"
 container="${ODBENCH_CONTAINER:-od-benchmark-agent-${dataset}}"
 memory="${ODBENCH_MEMORY:-8g}"
 cpus="${ODBENCH_CPUS:-4}"
+threads="${ODBENCH_THREADS:-4}"
+data_source="${ODBENCH_TRAIN_DATA_SOURCE:-${ODBENCH_DATA_SOURCE:-}}"
 
 if [[ ! "$dataset" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
     echo "invalid ODBENCH_DATASET: $dataset" >&2
+    exit 2
+fi
+if [[ ! "$threads" =~ ^[1-9][0-9]*$ ]]; then
+    echo "invalid ODBENCH_THREADS: $threads" >&2
     exit 2
 fi
 
@@ -31,9 +37,19 @@ case "${1:-}" in
             echo "dataset hook not found: $dataset" >&2
             exit 1
         fi
+        source_context="$repo_root"
+        if [[ -n "$data_source" ]]; then
+            if [[ ! -d "$data_source" ]]; then
+                echo "training data source is not a directory: $data_source" >&2
+                exit 1
+            fi
+            data_source="$(cd -- "$data_source" && pwd -P)"
+            source_context="$data_source"
+        fi
         docker build \
             --target dataset-runtime \
             --build-arg "DATASET=$dataset" \
+            --build-context "odbench_dataset_source=$source_context" \
             --tag "$image" \
             "$@" \
             "$repo_root"
@@ -58,6 +74,10 @@ case "${1:-}" in
             --tmpfs /tmp:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=700,size=536870912 \
             --env HOME=/workspace \
             --env XDG_CACHE_HOME=/workspace/.cache \
+            --env "ODBENCH_WORKSPACE_CPUS=$cpus" \
+            --env "OMP_NUM_THREADS=$threads" \
+            --env "MKL_NUM_THREADS=$threads" \
+            --env "OPENBLAS_NUM_THREADS=$threads" \
             --user 10001:10001 \
             --workdir /workspace \
             "$image" >/dev/null

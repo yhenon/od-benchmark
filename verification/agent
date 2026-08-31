@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+docker_dir="$repo_root/docker"
+temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/odbench-agent-verify.XXXXXX")"
+
+cleanup() {
+    rm -rf -- "$temporary_directory"
+}
+trap cleanup EXIT
+
+cd "$repo_root"
+uv run python -m unittest discover -s tests -p 'test_*.py'
+PYTHONPATH="$repo_root" uv run python verification/integration_sandbox.py
+"$docker_dir/prepare" cifar10 --skip-build --tasks-root "$temporary_directory/tasks"
+PYTHONPATH="$repo_root" uv run python verification/integration_outer_tools.py \
+    "$temporary_directory/tasks" \
+    "$temporary_directory/runs"
